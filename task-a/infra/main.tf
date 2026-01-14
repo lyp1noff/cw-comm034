@@ -6,15 +6,8 @@ locals {
   image_tagged   = "${local.region}-docker.pkg.dev/${local.project_id}/${google_artifact_registry_repository.api_repo.repository_id}/flask-app:${local.flask_src_hash}"
 }
 
-resource "google_project" "project" {
-  name            = "CW Task A Terraform"
-  project_id      = local.project_id
-  billing_account = var.billing_account_id
-  deletion_policy = "DELETE"
-}
-
 data "google_project" "project_details" {
-  project_id = google_project.project.project_id
+  project_id = local.project_id
 }
 
 resource "google_project_service" "services" {
@@ -29,7 +22,7 @@ resource "google_project_service" "services" {
     "iamcredentials.googleapis.com",
     "firestore.googleapis.com"
   ])
-  project            = google_project.project.project_id
+  project            = local.project_id
   service            = each.key
   disable_on_destroy = false
 }
@@ -43,12 +36,12 @@ resource "google_storage_bucket" "buckets" {
   for_each      = toset(["in", "source"])
   name          = "${local.project_id}-${each.key}"
   location      = local.region
-  project       = google_project.project.project_id
+  project       = local.project_id
   force_destroy = true
 }
 
 data "google_storage_project_service_account" "gcs_account" {
-  project    = google_project.project.project_id
+  project    = local.project_id
   depends_on = [time_sleep.wait_for_services]
 }
 
@@ -59,7 +52,7 @@ resource "google_project_iam_member" "permissions" {
     "token_creator"  = "roles/iam.serviceAccountTokenCreator",
     "datastore_user" = "roles/datastore.user"
   }
-  project = google_project.project.project_id
+  project = local.project_id
   role    = each.value
   member  = each.key == "gcs_pubsub" ? "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}" : "serviceAccount:${local.compute_sa}"
 }
@@ -72,7 +65,7 @@ resource "google_storage_bucket_iam_member" "bucket_access" {
 }
 
 resource "google_firestore_database" "database" {
-  project     = google_project.project.project_id
+  project     = local.project_id
   name        = "(default)"
   location_id = var.region
   type        = "FIRESTORE_NATIVE"
@@ -94,7 +87,7 @@ resource "google_storage_bucket_object" "function_source" {
 
 resource "google_cloudfunctions2_function" "file_analyzer" {
   name     = "file-analyzer"
-  project  = google_project.project.project_id
+  project  = local.project_id
   location = local.region
 
   build_config {
@@ -127,7 +120,7 @@ resource "google_cloudfunctions2_function" "file_analyzer" {
 }
 
 resource "google_artifact_registry_repository" "api_repo" {
-  project       = google_project.project.project_id
+  project       = local.project_id
   location      = local.region
   repository_id = "flask-api-repo"
   format        = "DOCKER"
@@ -143,7 +136,7 @@ resource "null_resource" "build_flask_image" {
 
   provisioner "local-exec" {
     command = <<EOT
-      gcloud builds submit --project ${google_project.project.project_id} \
+      gcloud builds submit --project ${local.project_id} \
         --tag ${local.image_tagged} \
         ${path.module}/../flask/
     EOT
@@ -155,7 +148,7 @@ resource "null_resource" "build_flask_image" {
 resource "google_cloud_run_v2_service" "flask_api" {
   name     = "flask-api"
   location = local.region
-  project  = google_project.project.project_id
+  project  = local.project_id
 
   invoker_iam_disabled = true
 

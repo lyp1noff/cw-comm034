@@ -6,8 +6,3 @@ variable "region" {
   type    = string
   default = "europe-west2"
 }
-
-variable "billing_account_id" {
-  type      = string
-  sensitive = true
-}
