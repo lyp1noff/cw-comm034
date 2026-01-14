@@ -84,16 +84,16 @@ resource "google_storage_bucket" "bucket-source" {
   force_destroy = true
 }
 
-data "archive_file" "function_zip" {
+data "archive_file" "function_zip_processor" {
   type        = "zip"
   output_path = "${path.module}/text_processor.zip"
   source_dir  = "${path.module}/../text_processor"
 }
 
 resource "google_storage_bucket_object" "zip" {
-  name   = "source.zip#${data.archive_file.function_zip.output_md5}"
+  name   = "source.zip#${data.archive_file.function_zip_processor.output_md5}"
   bucket = google_storage_bucket.bucket-source.name
-  source = data.archive_file.function_zip.output_path
+  source = data.archive_file.function_zip_processor.output_path
 }
 
 resource "google_cloudfunctions2_function" "function-file-analyzer" {
@@ -139,4 +139,66 @@ resource "google_cloudfunctions2_function" "function-file-analyzer" {
     google_storage_bucket_iam_member.invoker_in,
     google_storage_bucket_iam_member.invoker_out
   ]
+}
+
+resource "google_artifact_registry_repository" "api_repo" {
+  project       = google_project.project.project_id
+  location      = var.region
+  repository_id = "flask-api-repo"
+  format        = "DOCKER"
+  depends_on    = [time_sleep.wait_for_services]
+}
+
+data "archive_file" "function_zip_flask" {
+  type        = "zip"
+  output_path = "${path.module}/flask.zip"
+  source_dir  = "${path.module}/../flask"
+}
+
+resource "google_storage_bucket_object" "flask_zip_object" {
+  name   = "flask.zip#${data.archive_file.function_zip_flask.output_md5}"
+  bucket = google_storage_bucket.bucket-source.name
+  source = data.archive_file.function_zip_flask.output_path
+}
+
+resource "null_resource" "build_flask_image" {
+  triggers = {
+    source_hash = data.archive_file.function_zip_flask.output_md5
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      gcloud builds submit --project ${google_project.project.project_id} \
+        --tag ${var.region}-docker.pkg.dev/${google_project.project.project_id}/${google_artifact_registry_repository.api_repo.repository_id}/flask-app:latest \
+        ${path.module}/../flask/
+    EOT
+  }
+
+  depends_on = [
+    google_artifact_registry_repository.api_repo,
+    google_project_service.services
+  ]
+}
+
+resource "google_cloud_run_v2_service" "flask_api" {
+  name     = "flask-api"
+  location = var.region
+  project  = google_project.project.project_id
+
+  template {
+    containers {
+      image = "${var.region}-docker.pkg.dev/${google_project.project.project_id}/${google_artifact_registry_repository.api_repo.repository_id}/flask-app:latest"
+
+      env {
+        name  = "BUCKET_IN"
+        value = google_storage_bucket.bucket-in.name
+      }
+      env {
+        name  = "BUCKET_OUT"
+        value = google_storage_bucket.bucket-out.name
+      }
+    }
+  }
+
+  depends_on = [null_resource.build_flask_image]
 }
