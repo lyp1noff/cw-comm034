@@ -2,12 +2,12 @@ from flask import Flask, request, jsonify
 from google.cloud import storage
 import uuid
 import os
-import datetime
 
 app = Flask(__name__)
 
 BUCKET_IN = os.environ.get("BUCKET_IN")
 BUCKET_OUT = os.environ.get("BUCKET_OUT")
+
 storage_client = storage.Client()
 
 @app.route('/upload', methods=['POST'])
@@ -37,17 +37,12 @@ def upload_files():
 def get_results(batch_id):
     bucket = storage_client.bucket(BUCKET_OUT)
     blobs = bucket.list_blobs(prefix=f"{batch_id}/")
-    
     results = []
     for blob in blobs:
-        url = blob.generate_signed_url(
-            version="v4",
-            expiration=datetime.timedelta(minutes=15),
-            method="GET"
-        )
+        public_url = f"https://storage.googleapis.com/{BUCKET_OUT}/{blob.name}"
         results.append({
             "name": blob.name.split("/")[-1],
-            "download_url": url
+            "download_url": public_url
         })
     
     return jsonify({"batch_id": batch_id, "results": results})
