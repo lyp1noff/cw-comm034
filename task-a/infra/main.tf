@@ -1,8 +1,9 @@
 locals {
-  project_id = var.project_id
-  region     = var.region
-  compute_sa = "${data.google_project.project_details.number}-compute@developer.gserviceaccount.com"
-  image_name = "${local.region}-docker.pkg.dev/${local.project_id}/${google_artifact_registry_repository.api_repo.repository_id}/flask-app:latest"
+  project_id     = var.project_id
+  region         = var.region
+  compute_sa     = "${data.google_project.project_details.number}-compute@developer.gserviceaccount.com"
+  flask_src_hash = sha1(join("", [for f in fileset("${path.module}/../flask", "**") : filesha1("${path.module}/../flask/${f}")]))
+  image_tagged   = "${local.region}-docker.pkg.dev/${local.project_id}/${google_artifact_registry_repository.api_repo.repository_id}/flask-app:${local.flask_src_hash}"
 }
 
 resource "google_project" "project" {
@@ -25,7 +26,8 @@ resource "google_project_service" "services" {
     "storage.googleapis.com",
     "eventarc.googleapis.com",
     "pubsub.googleapis.com",
-    "iamcredentials.googleapis.com"
+    "iamcredentials.googleapis.com",
+    "firestore.googleapis.com"
   ])
   project            = google_project.project.project_id
   service            = each.key
@@ -38,7 +40,7 @@ resource "time_sleep" "wait_for_services" {
 }
 
 resource "google_storage_bucket" "buckets" {
-  for_each      = toset(["in", "out", "source"])
+  for_each      = toset(["in", "source"])
   name          = "${local.project_id}-${each.key}"
   location      = local.region
   project       = google_project.project.project_id
@@ -54,7 +56,8 @@ resource "google_project_iam_member" "permissions" {
   for_each = {
     "gcs_pubsub"     = "roles/pubsub.publisher",
     "event_receiver" = "roles/eventarc.eventReceiver",
-    "token_creator"  = "roles/iam.serviceAccountTokenCreator"
+    "token_creator"  = "roles/iam.serviceAccountTokenCreator",
+    "datastore_user" = "roles/datastore.user"
   }
   project = google_project.project.project_id
   role    = each.value
@@ -68,17 +71,13 @@ resource "google_storage_bucket_iam_member" "bucket_access" {
   depends_on = [time_sleep.wait_for_services]
 }
 
-resource "google_storage_bucket_iam_member" "bucket_output_access" {
-  bucket     = google_storage_bucket.buckets["out"].name
-  role       = "roles/storage.objectCreator"
-  member     = "serviceAccount:${local.compute_sa}"
-  depends_on = [time_sleep.wait_for_services]
-}
+resource "google_firestore_database" "database" {
+  project     = google_project.project.project_id
+  name        = "(default)"
+  location_id = var.region
+  type        = "FIRESTORE_NATIVE"
 
-resource "google_storage_bucket_iam_member" "bucket_output_public_access" {
-  bucket = google_storage_bucket.buckets["out"].name
-  role   = "roles/storage.objectViewer"
-  member = "allUsers"
+  depends_on = [time_sleep.wait_for_services]
 }
 
 data "archive_file" "function_zip" {
@@ -112,9 +111,6 @@ resource "google_cloudfunctions2_function" "file_analyzer" {
   service_config {
     max_instance_count = 10
     available_memory   = "256M"
-    environment_variables = {
-      OUTPUT_BUCKET = google_storage_bucket.buckets["out"].name
-    }
   }
 
   event_trigger {
@@ -138,15 +134,17 @@ resource "google_artifact_registry_repository" "api_repo" {
   depends_on    = [time_sleep.wait_for_services]
 }
 
+# Better to build image localy via script or use cloud build.
+# This approach was chosen to showcase all project setup using single terraform file.
 resource "null_resource" "build_flask_image" {
   triggers = {
-    dir_hash = sha1(join("", [for f in fileset("${path.module}/../flask", "**") : filesha1("${path.module}/../flask/${f}")]))
+    dir_hash = local.flask_src_hash
   }
 
   provisioner "local-exec" {
     command = <<EOT
       gcloud builds submit --project ${google_project.project.project_id} \
-        --tag ${local.image_name} \
+        --tag ${local.image_tagged} \
         ${path.module}/../flask/
     EOT
   }
@@ -163,14 +161,11 @@ resource "google_cloud_run_v2_service" "flask_api" {
 
   template {
     containers {
-      image = local.image_name
+      image = local.image_tagged
+
       env {
         name  = "BUCKET_IN"
         value = google_storage_bucket.buckets["in"].name
-      }
-      env {
-        name  = "BUCKET_OUT"
-        value = google_storage_bucket.buckets["out"].name
       }
     }
   }

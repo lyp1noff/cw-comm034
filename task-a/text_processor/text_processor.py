@@ -2,7 +2,7 @@ import re
 import json
 import statistics
 from collections import Counter
-from pathlib import Path
+
 
 def load_stop_words(file_path='stop_words.json'):
     try:
@@ -16,42 +16,50 @@ def load_stop_words(file_path='stop_words.json'):
         print(f"File {file_path} has incorrect JSON formatting.")
         return set()
 
-STOP_WORDS = load_stop_words()
-
 
 def get_clean_words(text):
-    words = re.findall(r'\b\w+\b', text.lower())
-    return words
+    return re.findall(r'\b[^\W\d_]+\b', text.lower(), re.UNICODE)
+
+
+def get_sentences(text):
+    return re.split(r'[.!?\n]\s*', text)
 
 
 def get_word_freq(file_content):
     words = get_clean_words(file_content)
-    filtered_words = [w for w in words if w not in STOP_WORDS]
+    stop_words = load_stop_words()
+    filtered_words = [w for w in words if w not in stop_words]
     return Counter(filtered_words).most_common(20)
 
 
 def get_sentence_starts(file_content):
-    sentences = re.split(r'[.!?]\s*', file_content)
+    sentences = get_sentences(file_content)
     starts = []
-    for s in sentences:
-        words = re.findall(r'\b\w+\b', s.lower())
+    for sentence in sentences:
+        words = get_clean_words(sentence)
         if words:
             starts.append(words[0])
     return Counter(starts).most_common(10)
 
 
 def get_length_stats(file_content):
-    sentences = re.split(r'[.!?]\s*', file_content)
-    lengths = [len(re.findall(r'\b\w+\b', s)) for s in sentences if s.strip()]
+    sentence_lengths = [
+        len(get_clean_words(sentence))
+        for sentence in get_sentences(file_content)
+    ]
     
-    if not lengths:
+    if not sentence_lengths:
         return 0, 0, 0
 
-    mean_val = statistics.mean(lengths)
-    median_val = statistics.median(lengths)
-    stdev_val = statistics.stdev(lengths) if len(lengths) > 1 else 0
+    mean_val = statistics.mean(sentence_lengths)
+    median_val = statistics.median(sentence_lengths)
+    stdev_val = statistics.stdev(sentence_lengths) if len(sentence_lengths) > 1 else 0
     
-    return mean_val, median_val, stdev_val
+    return {
+        "mean": mean_val,
+        "median": median_val,
+        "standard_deviation": stdev_val
+    }
 
 
 def run_analysis(text, tasks=None):
