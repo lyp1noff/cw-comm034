@@ -1,6 +1,5 @@
 variable "project_id" {
-  type    = string
-  default = "cw-a-terra-484220"
+  type = string
 }
 
 variable "region" {

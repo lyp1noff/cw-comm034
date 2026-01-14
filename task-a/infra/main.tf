@@ -9,6 +9,11 @@ data "google_project" "project_details" {
   project_id = google_project.project.project_id
 }
 
+resource "time_sleep" "wait_for_services" {
+  depends_on      = [google_project_service.services]
+  create_duration = "60s"
+}
+
 resource "google_project_service" "services" {
   for_each = toset([
     "cloudfunctions.googleapis.com",
@@ -16,6 +21,8 @@ resource "google_project_service" "services" {
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "storage.googleapis.com",
+    "eventarc.googleapis.com",
+    "pubsub.googleapis.com",
   ])
   project = google_project.project.project_id
   service = each.key
@@ -38,21 +45,36 @@ resource "google_storage_bucket" "bucket-out" {
 }
 
 resource "google_storage_bucket_iam_member" "invoker_in" {
-  bucket = google_storage_bucket.bucket-in.name
-  role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${data.google_project.project_details.number}-compute@developer.gserviceaccount.com"
+  bucket     = google_storage_bucket.bucket-in.name
+  role       = "roles/storage.objectViewer"
+  member     = "serviceAccount:${data.google_project.project_details.number}-compute@developer.gserviceaccount.com"
+  depends_on = [time_sleep.wait_for_services]
 }
 
 resource "google_storage_bucket_iam_member" "invoker_out" {
-  bucket = google_storage_bucket.bucket-out.name
-  role   = "roles/storage.objectCreator"
-  member = "serviceAccount:${data.google_project.project_details.number}-compute@developer.gserviceaccount.com"
+  bucket     = google_storage_bucket.bucket-out.name
+  role       = "roles/storage.objectCreator"
+  member     = "serviceAccount:${data.google_project.project_details.number}-compute@developer.gserviceaccount.com"
+  depends_on = [time_sleep.wait_for_services]
+}
+
+data "google_storage_project_service_account" "gcs_account" {
+  project    = google_project.project.project_id
+  depends_on = [time_sleep.wait_for_services]
 }
 
 resource "google_project_iam_member" "gcs_pubsub_publishing" {
   project = google_project.project.project_id
   role    = "roles/pubsub.publisher"
-  member  = "serviceAccount:service-${data.google_project.project_details.number}@gs-project-accounts.iam.gserviceaccount.com"
+  member  = "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}"
+}
+
+resource "google_project_iam_member" "event_receiver" {
+  project = google_project.project.project_id
+  role    = "roles/eventarc.eventReceiver"
+  member  = "serviceAccount:${data.google_project.project_details.number}-compute@developer.gserviceaccount.com"
+
+  depends_on = [time_sleep.wait_for_services]
 }
 
 resource "google_storage_bucket" "bucket-source" {
@@ -64,8 +86,8 @@ resource "google_storage_bucket" "bucket-source" {
 
 data "archive_file" "function_zip" {
   type        = "zip"
-  output_path = "${path.module}/source_temp.zip"
-  source_dir  = "${path.module}/../app"
+  output_path = "${path.module}/text_processor.zip"
+  source_dir  = "${path.module}/../text_processor"
 }
 
 resource "google_storage_bucket_object" "zip" {
